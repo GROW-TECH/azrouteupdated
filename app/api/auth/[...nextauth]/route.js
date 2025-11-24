@@ -8,6 +8,18 @@ function looksLikeBcryptHash(str) {
   return typeof str === "string" && /^\$2[aby]\$/.test(str);
 }
 
+async function fetchUserFromTable(email, table) {
+  const { data: user, error } = await supabase
+    .from(table)
+    .select("*")
+    .ilike("email", email.toLowerCase())
+    .maybeSingle();
+  if (error) {
+    console.error(`Supabase fetch error from ${table}:`, error);
+  }
+  return user ?? null;
+}
+
 export const authOptions = {
   providers: [
     CredentialsProvider({
@@ -15,39 +27,37 @@ export const authOptions = {
       credentials: {
         email: { label: "Email", type: "email" },
         password: { label: "Password", type: "password" },
-        role: { label: "Role", type: "text" },
+        role: { label: "Role", type: "text" }, // "student" | "teacher" (staff)
       },
       async authorize(credentials) {
         if (!credentials?.email || !credentials?.password || !credentials?.role) {
           throw new Error("Missing email/password/role");
         }
 
-        const table = credentials.role === "student" ? "student_list" : "Teachers";
+        let user = null;
+        const roleRequested = credentials.role?.toLowerCase();
 
-        const { data: user, error } = await supabase
-          .from(table)
-          .select("*")
-          .eq("email", credentials.email)
-          .single();
-
-        if (error) {
-          console.error("Supabase fetch error:", error);
-          throw new Error("Failed to fetch user");
+        if (roleRequested === "student") {
+          user = await fetchUserFromTable(credentials.email, "student_list");
+        } else if (roleRequested === "teacher" || roleRequested === "staff" || roleRequested === "coach") {
+          // IMPORTANT: for staff/teacher logins we ONLY check coaches table (per your request)
+          user = await fetchUserFromTable(credentials.email, "coaches");
+        } else {
+          // fallback: try student first, then coaches
+          user = (await fetchUserFromTable(credentials.email, "student_list")) || (await fetchUserFromTable(credentials.email, "coaches"));
         }
+
         if (!user) {
           throw new Error("No user found with this email");
         }
 
         const stored = user.password;
-
         if (!stored) {
-          console.warn("User has no password field set", { email: credentials.email, user });
+          console.warn("User has no password field set", { email: credentials.email });
           throw new Error("Invalid password");
         }
 
         let isPasswordValid = false;
-
-        // If stored password looks like a bcrypt hash, use bcrypt.compare
         if (looksLikeBcryptHash(stored)) {
           try {
             isPasswordValid = await bcrypt.compare(credentials.password, stored);
@@ -56,24 +66,31 @@ export const authOptions = {
             isPasswordValid = false;
           }
         } else {
-          // stored password appears to be plain-text — compare directly
           isPasswordValid = credentials.password === stored;
         }
 
         if (!isPasswordValid) {
-          // Helpful server-side log for debugging (remove in production)
           console.warn("Invalid password attempt for", credentials.email);
           throw new Error("Invalid password");
         }
 
-        const id = user.id ?? user.Student_id ?? user.student_id ?? null;
-        const name = user.name ?? user.Student_name ?? user.student_name ?? "";
+        // normalize fields
+        const id = user.id ?? user.Student_id ?? user.student_id ?? user.coach_display_id ?? null;
+        const name =
+          user.name ??
+          [user.firstName, user.middleName, user.lastName].filter(Boolean).join(" ") ??
+          user.Student_name ??
+          user.student_name ??
+          "";
+
+        // Resolve role: if authenticated from coaches table, set role to 'coach'
+        const resolvedRole = (user && user.coach_display_id) ? "coach" : roleRequested === "student" ? "student" : (roleRequested === "teacher" ? "teacher" : roleRequested);
 
         return {
           id,
           email: user.email,
           name,
-          role: credentials.role,
+          role: resolvedRole,
         };
       },
     }),

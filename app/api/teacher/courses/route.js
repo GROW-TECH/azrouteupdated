@@ -1,270 +1,291 @@
 // app/api/teacher/courses/route.js
-import { NextResponse } from 'next/server';
-import { connectDB } from '@/lib/mongodb';
-import Course from '@/models/Course';
-import { cookies } from 'next/headers';
-import jwt from 'jsonwebtoken';
-import Teacher from '@/models/Teacher';
+import { NextResponse } from "next/server";
+import { supabase } from "@/lib/supabaseClient";
+import { cookies } from "next/headers";
+import jwt from "jsonwebtoken";
 
+/**
+ * Local fallback thumbnail (developer-uploaded file).
+ */
+const UPLOADED_IMAGE_FALLBACK = "/mnt/data/57a37dda-71e8-4e2b-bfa9-294fca3fb3e9.png";
+
+// ------------------------------
+// VERIFY AUTH (Supabase Only)
+// ------------------------------
 async function verifyAuth() {
   const cookieStore = await cookies();
-  const token = cookieStore.get('auth-token');
+  const token = cookieStore.get("auth-token");
 
-  if (!token) {
-    return null;
-  }
+  if (!token?.value) return null;
 
   try {
     const decoded = jwt.verify(token.value, process.env.JWT_SECRET);
-    const teacher = await Teacher.findById(decoded.userId).select('-password');
 
-    if (!teacher) {
-      return null;
-    }
+    if (decoded.role !== "coach") return null;
+
+    // coaches table primary key is serial integer
+    const { data: coach, error } = await supabase
+      .from("coaches")
+      .select("id, name, email")
+      .eq("id", decoded.userId)
+      .maybeSingle();
+
+    if (error || !coach) return null;
 
     return {
-      id: teacher._id.toString(),
-      name: teacher.name,
-      email: teacher.email,
-      role: 'teacher'
+      id: coach.id,
+      name: coach.name,
+      email: coach.email,
+      role: "coach",
     };
-  } catch (error) {
-    console.error('Auth verification error:', error);
+  } catch (err) {
+    console.error("Auth verification error:", err);
     return null;
   }
 }
 
-// GET handler for fetching courses
+// Helper: get student count for a given course title (case-insensitive)
+async function fetchStudentCountForCourse(courseTitle) {
+  try {
+    if (!courseTitle || !courseTitle.toString().trim()) return 0;
+
+    // ilike with exact value acts as case-insensitive exact match.
+    // If you want substring match, use `%${courseTitle}%`
+    const { count, error } = await supabase
+      .from("student_list")
+      .select("id", { count: "exact", head: true })
+      .ilike("course", courseTitle.toString().trim());
+
+    if (error) {
+      console.error("Error fetching student count for course", courseTitle, error);
+      return 0;
+    }
+
+    return Number(count ?? 0);
+  } catch (err) {
+    console.error("fetchStudentCountForCourse error:", err);
+    return 0;
+  }
+}
+
+// ------------------------------------
+// GET — Fetch Courses (Supabase)
+//   - Adds `student_count` to each course (case-insensitive match to student_list.course)
+// ------------------------------------
 export async function GET(request) {
   try {
     const user = await verifyAuth();
-    
-    if (!user || user.role !== 'teacher') {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    await connectDB();
-
-    // Get query parameters
     const { searchParams } = new URL(request.url);
-    const page = parseInt(searchParams.get('page')) || 1;
-    const limit = parseInt(searchParams.get('limit')) || 10;
-    const search = searchParams.get('search');
-    const status = searchParams.get('status');
+    const page = Number(searchParams.get("page") || 1);
+    const limit = Number(searchParams.get("limit") || 10);
+    const search = (searchParams.get("search") || "").trim();
+    const status = searchParams.get("status") || "all";
 
-    // Build query
-    const query = { teacherId: user.id };
-    if (status && status !== 'all') query.status = status;
-    if (search) {
-      query.$text = { $search: search };
+    // base query: select all columns and request exact count for pagination
+    let query = supabase
+      .from("course")
+      .select("*", { count: "exact" })
+      // case-insensitive match on coach_name to the coach's name
+      .ilike("coach_name", user.name);
+
+    if (status && status !== "all") {
+      query = query.eq("status", status);
     }
 
-    // Execute query with pagination
-    const courses = await Course.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit)
-      .lean();
+    if (search) {
+      // search title (case-insensitive substring)
+      query = query.ilike("title", `%${search}%`);
+    }
 
-    // Get total count for pagination
-    const total = await Course.countDocuments(query);
+    // order by created_at (schema uses snake_case)
+    const from = (page - 1) * limit;
+    const to = page * limit - 1;
+
+    const { data, count, error } = await query
+      .order("created_at", { ascending: false })
+      .range(from, to);
+
+    if (error) {
+      console.error("Supabase GET error (course):", error);
+      return NextResponse.json({ error: "Failed to fetch courses" }, { status: 500 });
+    }
+
+    const rows = data || [];
+
+    // Fetch student counts in parallel (case-insensitive match: student_list.course == course.title)
+    const rowsWithCounts = await Promise.all(
+      rows.map(async (r) => {
+        let student_count = 0;
+        try {
+          // prefer using the course.title (trimmed)
+          const courseTitle = (r.title || "").toString().trim();
+          student_count = await fetchStudentCountForCourse(courseTitle);
+        } catch (e) {
+          console.error("Error fetching student count for course row", r.id, e);
+          student_count = 0;
+        }
+
+        return {
+          ...r,
+          thumbnail: r.thumbnail || r.pdf_path || UPLOADED_IMAGE_FALLBACK,
+          student_count,
+        };
+      })
+    );
 
     return NextResponse.json({
-      courses,
+      courses: rowsWithCounts,
       pagination: {
-        total,
-        pages: Math.ceil(total / limit),
+        total: Number(count ?? 0),
+        pages: count ? Math.ceil(count / limit) : 0,
         page,
-        limit
-      }
+        limit,
+      },
     });
-
-  } catch (error) {
-    console.error('Error fetching courses:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch courses' },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error("Error fetching courses:", err);
+    return NextResponse.json({ error: "Failed to fetch courses" }, { status: 500 });
   }
 }
 
-// POST handler for creating new courses
-export async function POST(req) {
+// ------------------------------------
+// POST — Create new Course (Supabase)
+// ------------------------------------
+export async function POST(request) {
   try {
     const user = await verifyAuth();
-    
-    if (!user || user.role !== 'teacher') {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    await connectDB();
-    const courseData = await req.json();
+    const courseData = await request.json();
 
-    // Validate required fields
-    if (!courseData.title || !courseData.description || !courseData.thumbnail) {
-      return NextResponse.json(
-        { error: 'Missing required fields' },
-        { status: 400 }
-      );
-    }
+    if (!courseData.title || !courseData.description)
+      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
 
-    // Add order to sections and lessons
-    const processedSections = courseData.sections?.map((section, sectionIndex) => ({
+    // sections/lessons ordering (if you use the same structure)
+    const sections = (courseData.sections || []).map((section, i) => ({
       ...section,
-      order: sectionIndex + 1, // Add section order
-      lessons: section.lessons?.map((lesson, lessonIndex) => ({
+      order: i + 1,
+      lessons: (section.lessons || []).map((lesson, j) => ({
         ...lesson,
-        order: lessonIndex + 1 // Add lesson order
-      })) || []
-    })) || [];
+        order: j + 1,
+      })),
+    }));
 
-    // Calculate duration and lessons count
-    const totalDuration = processedSections.reduce((total, section) => {
-      return total + (section.lessons?.reduce((sectionTotal, lesson) => {
-        return sectionTotal + (parseInt(lesson.duration) || 0);
-      }, 0) || 0);
+    const totalDuration = sections.reduce((a, s) => {
+      return (
+        a + s.lessons.reduce((b, l) => b + (parseInt(l.duration) || 0), 0)
+      );
     }, 0);
 
-    const totalLessons = processedSections.reduce((total, section) => {
-      return total + (section.lessons?.length || 0);
-    }, 0);
+    const totalLessons = sections.reduce((a, s) => a + (s.lessons || []).length, 0);
 
-    // Create new course document with processed sections
-    const course = new Course({
-      ...courseData,
-      sections: processedSections, // Use processed sections with order
-      teacherId: user.id,
-      teacherName: user.name,
-      status: 'draft',
-      enrollments: 0,
-      reviews: [],
-      rating: 0,
-      totalDuration,
-      totalLessons
-    });
+    // Build insert payload matching your schema (snake_case)
+    const payload = {
+      title: courseData.title,
+      description: courseData.description,
+      level: courseData.level || null,
+      price: courseData.price ?? 0,
+      status: courseData.status || "draft",
+      coach_id: courseData.coach_id || null, // optional UUID FK to coach table
+      coach_id_int: user.id, // store serial id too if you want (optional)
+      coach_name: user.name, // store coach name (string) as requested
+      pdf_path: courseData.pdf_path || null,
+      videos: courseData.videos || null,
+      sections,
+      total_duration: totalDuration,
+      total_lessons: totalLessons,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
 
-    // Save course
-    const savedCourse = await course.save();
+    const { data, error } = await supabase
+      .from("course")
+      .insert([payload])
+      .select("*")
+      .maybeSingle();
 
-    return NextResponse.json({
-      message: 'Course created successfully',
-      courseId: savedCourse._id,
-      course: savedCourse
-    });
+    if (error) {
+      console.error("Supabase POST error (course):", error);
+      return NextResponse.json({ error: "Failed to create course" }, { status: 500 });
+    }
 
-  } catch (error) {
-    console.error('Error creating course:', error);
-    return NextResponse.json(
-      { error: error.message || 'Internal Server Error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: "Course created successfully", course: data });
+  } catch (err) {
+    console.error("POST error (course):", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }
 
-// PATCH handler for updating courses
+// ------------------------------------
+// PATCH — Update Course (Supabase)
+// ------------------------------------
 export async function PATCH(request) {
   try {
     const user = await verifyAuth();
-    
-    if (!user || user.role !== 'teacher') {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+    if (!user) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await request.json();
     const { courseId, ...updateData } = body;
 
-    if (!courseId) {
-      return NextResponse.json(
-        { error: 'Course ID is required' },
-        { status: 400 }
-      );
+    if (!courseId)
+      return NextResponse.json({ error: "Course ID required" }, { status: 400 });
+
+    // Fetch existing course to verify ownership: either coach_id_int matches or coach_name matches (case-insensitive)
+    const { data: existing, error: fetchErr } = await supabase
+      .from("course")
+      .select("*")
+      .eq("id", courseId)
+      .maybeSingle();
+
+    if (fetchErr || !existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
     }
 
-    await connectDB();
+    // verify ownership: match serial id or case-insensitive name match
+    const nameMatches =
+      (existing.coach_name ?? "").toString().trim().toLowerCase() ===
+      (user.name ?? "").toString().trim().toLowerCase();
 
-    // Verify course ownership
-    const existingCourse = await Course.findOne({
-      _id: courseId,
-      teacherId: user.id
-    });
+    const idMatches = existing.coach_id_int !== null && Number(existing.coach_id_int) === Number(user.id);
 
-    if (!existingCourse) {
-      return NextResponse.json(
-        { error: 'Course not found or unauthorized' },
-        { status: 404 }
-      );
+    if (!nameMatches && !idMatches) {
+      return NextResponse.json({ error: "Not authorized to update this course" }, { status: 403 });
     }
 
-    // If updating status, validate the new status
+    // If status is present, validate
     if (updateData.status) {
-      if (!['draft', 'published', 'archived'].includes(updateData.status)) {
-        return NextResponse.json(
-          { error: 'Invalid status value' },
-          { status: 400 }
-        );
-      }
-
-      // If publishing, check if course has required fields
-      if (updateData.status === 'published') {
-        if (!existingCourse.title || !existingCourse.description || 
-            !existingCourse.thumbnail || !existingCourse.category ||
-            !existingCourse.sections || existingCourse.sections.length === 0) {
-          return NextResponse.json(
-            { error: 'Course must be complete before publishing' },
-            { status: 400 }
-          );
-        }
+      if (!["draft", "published", "archived"].includes(updateData.status)) {
+        return NextResponse.json({ error: "Invalid status" }, { status: 400 });
       }
     }
 
-    // Update the course
-    const updatedCourse = await Course.findByIdAndUpdate(
-      courseId,
-      { 
-        $set: {
-          ...updateData,
-          updatedAt: new Date()
-        }
-      },
-      { 
-        new: true,
-        runValidators: true 
-      }
-    );
+    // Ensure updated_at uses snake_case
+    const { data, error } = await supabase
+      .from("course")
+      .update({
+        ...updateData,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", courseId)
+      .select("*")
+      .maybeSingle();
 
-    // Update teacher's course stats if needed
-    if (updateData.status && updateData.status !== existingCourse.status) {
-      const teacher = await Teacher.findById(user.id);
-      if (teacher && teacher.stats) {
-        const stats = { ...teacher.stats };
-        if (updateData.status === 'published') {
-          stats.activeCourses = (stats.activeCourses || 0) + 1;
-        } else if (existingCourse.status === 'published') {
-          stats.activeCourses = Math.max(0, (stats.activeCourses || 0) - 1);
-        }
-        await Teacher.findByIdAndUpdate(user.id, { stats });
-      }
+    if (error) {
+      console.error("Supabase PATCH error (course):", error);
+      return NextResponse.json({ error: "Failed to update course" }, { status: 500 });
     }
 
-    return NextResponse.json({
-      message: 'Course updated successfully',
-      course: updatedCourse
-    });
-
-  } catch (error) {
-    console.error('Error updating course:', error);
-    return NextResponse.json(
-      { error: error.message || 'Internal Server Error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ message: "Course updated", course: data });
+  } catch (err) {
+    console.error("PATCH error (course):", err);
+    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
   }
 }

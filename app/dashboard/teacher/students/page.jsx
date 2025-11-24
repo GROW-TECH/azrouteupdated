@@ -1,71 +1,126 @@
-"use client";
+'use client';
 
 import React, { useEffect, useMemo, useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Download, Search, Plus, MoreHorizontal } from "lucide-react";
-import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardHeader, CardTitle, CardContent } from "@/app/components/ui/card";
+import { Input } from "@/app/components/ui/input";
+import { Button } from "@/app/components/ui/button";
+import { Badge } from "@/app/components/ui/badge";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/app/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/app/components/ui/table";
+import { Download, Search } from "lucide-react";
+import { Skeleton } from "@/app/components/ui/skeleton";
 
 export default function StudentsPage() {
   const [loading, setLoading] = useState(true);
+  const [courses, setCourses] = useState([]);
   const [students, setStudents] = useState([]);
   const [query, setQuery] = useState("");
   const [courseFilter, setCourseFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all"); // 'all' | 'paid' | 'unpaid'
+  const [loadingStudents, setLoadingStudents] = useState(false);
 
+  // Fetch courses (server provides student_count on course rows)
   useEffect(() => {
-    let active = true;
+    let alive = true;
     (async () => {
       try {
-        const res = await fetch("/api/teacher/students", { credentials: "include" });
-        if (!res.ok) throw new Error("fallback");
-        const data = await res.json();
-        if (active) setStudents(data.students || []);
-      } catch {
-        // Fallback demo data
-        if (!active) return;
-        setStudents([
-          { id: "S001", name: "Alice Johnson", email: "alice@school.com", course: "Beginner", joined: "2025-03-02", status: "active" },
-          { id: "S002", name: "Bob Carter", email: "bob@school.com", course: "Intermediate", joined: "2025-02-12", status: "inactive" },
-          { id: "S003", name: "Charlie Kim", email: "charlie@school.com", course: "Beginner", joined: "2025-01-22", status: "active" },
-          { id: "S004", name: "Divya Rao", email: "divya@school.com", course: "Advanced", joined: "2025-04-10", status: "active" },
-          { id: "S005", name: "Ethan Li", email: "ethan@school.com", course: "Intermediate", joined: "2025-05-03", status: "pending" },
-        ]);
+        const res = await fetch("/api/teacher/courses", { credentials: "include" });
+        const json = await res.json();
+        if (!res.ok) throw new Error("Failed to load courses");
+        if (!alive) return;
+        setCourses(Array.isArray(json.courses) ? json.courses : []);
+      } catch (e) {
+        if (!alive) return;
+        setCourses([]);
       } finally {
-        if (active) setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
-    return () => {
-      active = false;
-    };
+    return () => (alive = false);
   }, []);
 
+  // Fetch students for selected course (or all)
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoadingStudents(true);
+        const params = new URLSearchParams();
+        if (courseFilter && courseFilter !== "all") params.set("course", courseFilter);
+        const res = await fetch(`/api/teacher/students?${params.toString()}`, { credentials: "include" });
+        if (!res.ok) throw new Error("Failed to load students");
+        const json = await res.json();
+        if (!alive) return;
+        setStudents(Array.isArray(json.students) ? json.students : []);
+      } catch (e) {
+        if (!alive) return;
+        setStudents([]);
+      } finally {
+        if (alive) setLoadingStudents(false);
+      }
+    })();
+    return () => (alive = false);
+  }, [courseFilter]);
+
+  // Normalize status: treat anything not 'paid' as unpaid
+  const normalizeStatus = (s) => {
+    const st = (s || "").toString().trim().toLowerCase();
+    return st === "paid" ? "paid" : "unpaid";
+  };
+
+  // Filtered list by search query and status
   const filtered = useMemo(() => {
     return students.filter((s) => {
+      // query match: name, email, reg_no/id
+      const q = (query || "").trim().toLowerCase();
       const matchesQuery =
-        !query ||
-        s.name.toLowerCase().includes(query.toLowerCase()) ||
-        s.email.toLowerCase().includes(query.toLowerCase()) ||
-        s.id.toLowerCase().includes(query.toLowerCase());
-      const matchesCourse = courseFilter === "all" || s.course === courseFilter;
-      const matchesStatus = statusFilter === "all" || s.status === statusFilter;
-      return matchesQuery && matchesCourse && matchesStatus;
+        !q ||
+        (s.name && s.name.toString().toLowerCase().includes(q)) ||
+        (s.email && s.email.toString().toLowerCase().includes(q)) ||
+        (String(s.reg_no ?? s.id).toLowerCase().includes(q));
+      // status match using normalizeStatus
+      const sNorm = normalizeStatus(s.status);
+      const matchesStatus = statusFilter === "all" || statusFilter === sNorm;
+      return matchesQuery && matchesStatus;
     });
-  }, [students, query, courseFilter, statusFilter]);
+  }, [students, query, statusFilter]);
 
+  // Build course options (unique title with counts)
+  const courseOptions = useMemo(() => {
+    const seen = new Set();
+    const unique = [];
+    for (const c of courses) {
+      const title = (c.title || c.coach_name || "").toString();
+      if (!title) continue;
+      if (!seen.has(title)) {
+        seen.add(title);
+        unique.push({ title, count: Number(c.student_count ?? 0) });
+      }
+    }
+    return unique;
+  }, [courses]);
+
+  // Export CSV for currently visible (filtered) students
   const exportCSV = () => {
-    const header = ["ID", "Name", "Email", "Course", "Joined", "Status"];
-    const rows = filtered.map((s) => [s.id, s.name, s.email, s.course, s.joined, s.status]);
-    const csv = [header, ...rows].map((r) => r.map((x) => `"${String(x).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const header = ["Reg No / ID", "Name", "Email", "Phone", "Place", "Course", "Level", "Status"];
+    const rows = filtered.map((s) => [
+      s.reg_no ?? s.id,
+      s.name ?? "",
+      s.email ?? "",
+      s.phone ?? "",
+      s.place ?? "",
+      s.course ?? "",
+      s.level ?? "",
+      normalizeStatus(s.status) === "paid" ? "Paid" : "Unpaid",
+    ]);
+    const csv = [header, ...rows]
+      .map((r) => r.map((x) => `"${String(x ?? "").replace(/"/g, '""')}"`).join(","))
+      .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "students.csv";
+    a.download = `students_${courseFilter === "all" ? "all" : courseFilter}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -76,10 +131,12 @@ export default function StudentsPage() {
         <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div>
             <CardTitle className="text-2xl font-bold">Students</CardTitle>
-            <p className="text-sm text-gray-500 mt-1">Manage enrolled students, filter by course or status, and export.</p>
+            <p className="text-sm text-gray-500 mt-1">
+              Enrolled Students for Your Courses
+            </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+          <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto items-start">
             <div className="relative flex-1 sm:w-72">
               <Search className="absolute left-2 top-2.5 h-4 w-4 text-gray-400" />
               <Input
@@ -91,14 +148,16 @@ export default function StudentsPage() {
             </div>
 
             <Select value={courseFilter} onValueChange={setCourseFilter}>
-              <SelectTrigger className="sm:w-40">
-                <SelectValue placeholder="Course" />
+              <SelectTrigger className="sm:w-48">
+                <SelectValue placeholder="All Courses" />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Courses</SelectItem>
-                <SelectItem value="Beginner">Beginner</SelectItem>
-                <SelectItem value="Intermediate">Intermediate</SelectItem>
-                <SelectItem value="Advanced">Advanced</SelectItem>
+                {courseOptions.map((c) => (
+                  <SelectItem key={c.title} value={c.title}>
+                    {c.title} ({c.count})
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
 
@@ -107,10 +166,9 @@ export default function StudentsPage() {
                 <SelectValue placeholder="Status" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All Statuses</SelectItem>
-                <SelectItem value="active">Active</SelectItem>
-                <SelectItem value="inactive">Inactive</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="all">Payment Status</SelectItem>
+                <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="unpaid">Unpaid</SelectItem>
               </SelectContent>
             </Select>
 
@@ -118,16 +176,13 @@ export default function StudentsPage() {
               <Download className="h-4 w-4 mr-2" />
               Export CSV
             </Button>
-
-            <Button onClick={() => alert("Create student flow here")}>
-              <Plus className="h-4 w-4 mr-2" />
-              Add Student
-            </Button>
           </div>
         </CardHeader>
 
         <CardContent>
-          {loading ? (
+          
+
+          {loadingStudents ? (
             <div className="space-y-3">
               {[...Array(6)].map((_, i) => (
                 <Skeleton key={i} className="h-12 w-full" />
@@ -138,55 +193,70 @@ export default function StudentsPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[100px]">ID</TableHead>
+                    <TableHead className="w-[110px]">Reg / ID</TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Email</TableHead>
+                    <TableHead>Phone</TableHead>
+                    <TableHead>Place</TableHead>
                     <TableHead>Course</TableHead>
-                    <TableHead>Joined</TableHead>
+                    <TableHead>Level</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center text-gray-500 py-8">
+                      <TableCell colSpan={8} className="text-center text-gray-500 py-8">
                         No students found.
                       </TableCell>
                     </TableRow>
                   ) : (
-                    filtered.map((s) => (
-                      <TableRow key={s.id} className="hover:bg-gray-50">
-                        <TableCell className="font-medium">{s.id}</TableCell>
-                        <TableCell>{s.name}</TableCell>
-                        <TableCell className="text-gray-600">{s.email}</TableCell>
-                        <TableCell>{s.course}</TableCell>
-                        <TableCell>{new Date(s.joined).toLocaleDateString()}</TableCell>
-                        <TableCell>
-                          <Badge
-                            variant={
-                              s.status === "active" ? "default" : s.status === "pending" ? "secondary" : "outline"
-                            }
-                          >
-                            {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            onClick={() => alert(`Open details/edit for ${s.name}`)}
-                            className="h-8 px-2"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))
+                    filtered.map((s) => {
+                      const stat = normalizeStatus(s.status); // 'paid' | 'unpaid'
+                      return (
+                        <TableRow key={s.id} className="hover:bg-gray-50">
+                          <TableCell className="font-medium">{s.reg_no ?? s.id}</TableCell>
+                          <TableCell>
+                            <div>
+                              <div className="font-medium">{s.name}</div>
+                              <div className="text-xs text-gray-500">{s.class_type ?? ""}</div>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-gray-600">{s.email}</TableCell>
+                          <TableCell>{s.phone}</TableCell>
+                          <TableCell>{s.place}</TableCell>
+                          <TableCell>{s.course}</TableCell>
+                          <TableCell>{s.level}</TableCell>
+                          <TableCell>
+                            <Badge
+                              className={
+                                stat === "paid"
+                                  ? "bg-green-600 text-white"
+                                  : "bg-gray-200 text-gray-800"
+                              }
+                            >
+                              {stat === "paid" ? "Paid" : "Unpaid"}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })
                   )}
                 </TableBody>
               </Table>
             </div>
           )}
+          <div className="mb-4">
+            <div className="text-sm text-gray-600">
+              Showing{" "}
+              <strong>
+                {courseFilter === "all"
+                  ? students.length
+                  : (courseOptions.find((c) => c.title === courseFilter)?.count ?? filtered.length)}
+              </strong>{" "}
+              students for <strong>{courseFilter === "all" ? "All Courses" : courseFilter}</strong>
+            </div>
+          </div>
         </CardContent>
       </Card>
     </div>

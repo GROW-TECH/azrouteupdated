@@ -1,106 +1,175 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Input } from "@/components/ui/input";
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
+import { useEffect, useMemo, useState } from "react";
+import { Card, CardHeader, CardTitle, CardContent } from "@/app/components/ui/card";
+import { Progress } from "@/app/components/ui/progress";
+import { Input } from "@/app/components/ui/input";
+import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/app/components/ui/select";
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from "@/app/components/ui/table";
 
 export default function ProgressPage() {
-  // demo data (replace with API fetch as needed)
-  const [overall] = useState(75); // AI Course Assessment %
-  const [rows] = useState([
-    { student: "David Brown", course: "Advanced Tactics", completion: 80 },
-    { student: "Sarah Wilson", course: "Endgame Strategies", completion: 65 },
-    { student: "James Lee", course: "Introduction to Openings", completion: 90 },
-    { student: "Emily Davis", course: "Chess for Beginners", completion: 50 },
-  ]);
-
-  // simple client-side filters (optional)
+  const [loading, setLoading] = useState(true);
+  const [entries, setEntries] = useState([]);
   const [q, setQ] = useState("");
-  const [min, setMin] = useState("0");
+  const [courseFilter, setCourseFilter] = useState("all");
 
-  const filtered = useMemo(
-    () =>
-      rows.filter(
-        (r) =>
-          (r.student.toLowerCase().includes(q.toLowerCase()) ||
-            r.course.toLowerCase().includes(q.toLowerCase())) &&
-          r.completion >= Number(min)
-      ),
-    [rows, q, min]
-  );
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch("/api/teacher/progress", { credentials: "include" });
+        const json = await res.json();
+
+        // API may return students OR entries — handle both
+        const raw = Array.isArray(json.students) ? json.students : Array.isArray(json.entries) ? json.entries : [];
+
+        // normalize each record to the UI shape we expect
+        const normalized = raw.map((s) => {
+          const totalVideos = Number(s.total_videos ?? s.totalVideos ?? 0);
+          const completedVideos = Number(s.completed_videos ?? s.completedVideos ?? 0);
+          const watchedSeconds = Number(s.watched_seconds ?? s.watchedSeconds ?? s.watched_seconds ?? 0);
+          const totalSeconds = Number(s.total_seconds ?? s.totalSeconds ?? 0);
+
+          let completion = 0;
+          if (totalSeconds > 0) completion = Math.round((watchedSeconds / totalSeconds) * 100);
+          else if (totalVideos > 0) completion = Math.round((completedVideos / totalVideos) * 100);
+          else completion = Number(s.progress_percent ?? s.completion ?? s.completion_percent ?? 0);
+
+          return {
+            student_id: s.id ?? s.student_id,
+            reg_no: s.reg_no ?? s.regNo ?? s.regNo ?? null,
+            name: s.name ?? s.student_name ?? "",
+            email: s.email ?? "",
+            phone: s.phone ?? s.mobile ?? "",
+            place: s.place ?? "",
+            course_id: s.course_id ?? s.courseId ?? s.course_id ?? null,
+            course_title: s.course ?? s.course_title ?? s.title ?? "",
+            level: s.level ?? "",
+            total_videos: totalVideos,
+            completed_videos: completedVideos,
+            watched_seconds: watchedSeconds,
+            total_seconds: totalSeconds,
+            completion: Math.min(100, Math.max(0, completion)),
+          };
+        });
+
+        if (!mounted) return;
+        setEntries(normalized);
+      } catch (err) {
+        console.error("Failed to load progress", err);
+        if (mounted) setEntries([]);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const courseOptions = useMemo(() => {
+    const map = new Map();
+    entries.forEach((e) => {
+      const key = e.course_id ?? e.course_title ?? "__unknown__";
+      if (!map.has(key)) map.set(key, e.course_title || "Unknown");
+    });
+    return Array.from(map.entries()).map(([id, title]) => ({ id, title }));
+  }, [entries]);
+
+  const filtered = useMemo(() => {
+    return entries.filter((e) => {
+      const qlower = q.trim().toLowerCase();
+      const matchesQ =
+        !qlower ||
+        (e.name && e.name.toLowerCase().includes(qlower)) ||
+        (e.email && e.email.toLowerCase().includes(qlower)) ||
+        (String(e.reg_no ?? "").toLowerCase().includes(qlower));
+
+      const matchesCourse = courseFilter === "all" || String(e.course_id) === String(courseFilter) || e.course_title === courseFilter;
+
+      return matchesQ && matchesCourse;
+    });
+  }, [entries, q, courseFilter]);
 
   return (
-    <div className="max-w-5xl mx-auto p-6">
+    <div className="max-w-6xl mx-auto p-6">
       <h1 className="text-3xl font-bold mb-6">Progress</h1>
 
-      {/* Progress Tracker */}
-      <Card className="mb-8">
-        <CardHeader>
-          <CardTitle className="text-2xl">Progress Tracker</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="rounded-xl border p-4 md:p-6">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-lg md:text-xl font-semibold">AI Course Assessment</span>
-              <span className="text-lg font-semibold">{overall}%</span>
-            </div>
-            <Progress value={overall} className="h-5" />
+      <Card className="mb-6">
+        <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div>
+            <CardTitle className="text-2xl">Students progress</CardTitle>
+            <p className="text-sm text-gray-500 mt-1">Shows per-student progress for your courses.</p>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Course Progress */}
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-2xl">Course Progress</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Input
-              placeholder="Search student or course"
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              className="sm:w-80"
-            />
-            <Select value={min} onValueChange={setMin}>
-              <SelectTrigger className="sm:w-56">
-                <SelectValue placeholder="Min completion" />
+          <div className="flex gap-2 w-full md:w-auto">
+            <Input placeholder="Search student or email / reg no" value={q} onChange={(e) => setQ(e.target.value)} className="w-80" />
+
+            <Select value={courseFilter} onValueChange={setCourseFilter}>
+              <SelectTrigger className="w-56">
+                <SelectValue placeholder="All Courses" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="0">All completion</SelectItem>
-                <SelectItem value="50">≥ 50%</SelectItem>
-                <SelectItem value="75">≥ 75%</SelectItem>
-                <SelectItem value="90">≥ 90%</SelectItem>
+                <SelectItem value="all">All Courses</SelectItem>
+                {courseOptions.map((c) => (
+                  <SelectItem key={String(c.id)} value={String(c.id)}>
+                    {c.title}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
+        </CardHeader>
 
+        <CardContent>
           <div className="rounded-xl border overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[40%]">Student</TableHead>
-                  <TableHead className="w-[40%]">Course</TableHead>
-                  <TableHead className="text-right w-[20%]">Completion</TableHead>
+                  <TableHead className="w-[120px]">Reg / ID</TableHead>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Course</TableHead>
+                  <TableHead className="w-[160px]">Progress</TableHead>
+                  <TableHead className="w-[120px]">Videos</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filtered.map((r, i) => (
-                  <TableRow key={i} className="align-middle">
-                    <TableCell className="font-medium">{r.student}</TableCell>
-                    <TableCell>{r.course}</TableCell>
-                    <TableCell className="text-right">{r.completion}%</TableCell>
-                  </TableRow>
-                ))}
-                {filtered.length === 0 && (
+                {loading ? (
                   <TableRow>
-                    <TableCell colSpan={3} className="text-center text-gray-500 py-8">
-                      No records match your filters.
-                    </TableCell>
+                    <TableCell colSpan={6} className="text-center py-8">Loading…</TableCell>
                   </TableRow>
+                ) : filtered.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={6} className="text-center py-8">No records found.</TableCell>
+                  </TableRow>
+                ) : (
+                  filtered.map((e) => (
+                    <TableRow key={`${e.student_id}-${e.course_id}`}>
+                      <TableCell className="font-medium">{e.reg_no ?? e.student_id}</TableCell>
+                      <TableCell>{e.name}</TableCell>
+                      <TableCell className="text-gray-600">{e.email}</TableCell>
+                      <TableCell>{e.course_title}</TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <div className="flex-1">
+                            <div className="text-sm mb-1">{Math.round(e.completion)}%</div>
+<Progress
+  value={Math.round(e.completion)}
+  className="h-4 rounded-xl shadow-inner bg-gray-200"
+  indicatorClassName="rounded-xl"
+/>
+                          </div>
+                          <div className="text-xs text-gray-500 w-12 text-right">{Math.round(e.completion)}%</div>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="text-sm">{e.completed_videos}/{e.total_videos}</div>
+                      </TableCell>
+                    </TableRow>
+                  ))
                 )}
               </TableBody>
             </Table>

@@ -1,209 +1,229 @@
 "use client";
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect } from "react";
+import { useSession } from "next-auth/react";
+import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Progress } from "../../components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../../components/ui/tabs";
-import {
-  Book,
-  Clock,
-  Medal,
-  Target,
-  ChevronRight,
-  PlayCircle,
-  Puzzle,
-  Trophy,
-  Loader2,
-} from "lucide-react";
+import { Book, Clock, Trophy, Target, ChevronRight, Loader2 } from "lucide-react";
 
 function OverviewCard({ icon: Icon, title, value, subtitle }) {
   return (
-    <Card>
-      <CardContent className="p-6">
-        <div className="flex items-center space-x-2">
-          <Icon className="h-4 w-4 text-muted-foreground" />
-          <h3 className="text-sm font-medium">{title}</h3>
-        </div>
-        <div className="mt-3">
-          <div className="text-2xl font-bold">{value ?? 0}</div>
-          <p className="text-xs text-muted-foreground">{subtitle ?? ''}</p>
-        </div>
-      </CardContent>
-    </Card>
+    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} whileHover={{ scale: 1.02 }} transition={{ duration: 0.28 }}>
+      <Card>
+        <CardContent className="p-6">
+          <div className="flex items-center space-x-2">
+            <Icon className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-medium">{title}</h3>
+          </div>
+          <div className="mt-3">
+            <div className="text-2xl font-bold">{value ?? 0}</div>
+            <p className="text-xs text-muted-foreground">{subtitle ?? ""}</p>
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
   );
 }
 
-function StudentDashboard() {
+function ScoreBadge({ score }) {
+  // color by score
+  const bg =
+    score == null ? "bg-gray-200 text-gray-800" :
+    score >= 85 ? "bg-emerald-600 text-white" :
+    score >= 60 ? "bg-yellow-500 text-white" :
+    "bg-green-500 text-white";
+
+  return (
+    <div className={`inline-flex items-center justify-center px-3 py-1 rounded-full text-sm font-semibold ${bg}`}>
+      {score == null ? "-" : `${score}`}
+    </div>
+  );
+}
+
+export default function StudentDashboard() {
   const router = useRouter();
+  const { data: session, status } = useSession();
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({});
-  const [activeCourses, setActiveCourses] = useState([]);
-  const [certificates, setCertificates] = useState([]);
-  const [goals, setGoals] = useState([]);
+  const [stats, setStats] = useState(null);
 
   useEffect(() => {
+    if (status === "loading") return;
+    if (status === "unauthenticated") {
+      setLoading(false);
+      return;
+    }
     fetchData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, session]);
 
   const fetchData = async () => {
+    setLoading(true);
     try {
-      const [statsRes, coursesRes, certsRes, goalsRes] = await Promise.all([
-        fetch("/api/student/stats"),
-        fetch("/api/student/courses/active"),
-        fetch("/api/student/certificates"),
-        fetch("/api/student/goals"),
-      ]);
+      const response = await fetch("/api/student", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: session?.user?.email }),
+      });
 
-      const [statsData, coursesData, certData, goalData] = await Promise.all([
-        statsRes.json(),
-        coursesRes.json(),
-        certsRes.json(),
-        goalsRes.json(),
-      ]);
+      if (!response.ok) {
+        setStats(null);
+        setLoading(false);
+        return;
+      }
 
-      setStats(statsData ?? {});
-      setActiveCourses(coursesData?.courses ?? coursesData ?? []);
-      setCertificates(certData?.certificates ?? certData ?? []);
-      setGoals(goalData?.goals ?? goalData ?? []);
-    } catch (err) {
-      console.error("Dashboard fetch error", err);
-      setStats({});
-      setActiveCourses([]);
-      setCertificates([]);
-      setGoals([]);
+      const jsonData = await response.json();
+      setStats(jsonData);
+    } catch (error) {
+      console.error("fetch error", error);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleCourseClick = (id) => {
-    router.push(`/learn/${id}`);
-  };
-
-  if (loading) {
+  if (status === "loading" || loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <Loader2 className="h-8 w-8 animate-spin" />
+        <Loader2 className="h-10 w-10 animate-spin" />
       </div>
     );
   }
 
+  if (!session) {
+    return (
+      <div className="container px-4 py-8">
+        <h2 className="text-xl font-semibold">Please sign in to see your dashboard</h2>
+      </div>
+    );
+  }
+
+  const totalCourses = stats?.totalCourses ?? 0;
+  const attendancePercent = stats?.attendance?.percent ?? 0;
+  const videoProgressPercent = stats?.videoProgress?.percent ?? 0;
+  const assessments = Array.isArray(stats?.assessments) ? stats.assessments : [];
+  const assessmentsCompleted = assessments.length;
+  const activeCourses = stats?.activeCourses ?? [];
+
   return (
-    <div className="container px-4 py-8">
-      <div className="flex items-center justify-between mb-8">
+    <div className="container px-4 py-8 space-y-8">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold">Welcome Back to Azroute Chess Institute</h1>
-          <p className="text-muted-foreground">Track and improve your chess learning journey.</p>
+          <h1 className="text-3xl font-extrabold">Welcome Back</h1>
+          <p className="text-sm text-muted-foreground">Track and improve your chess learning journey.</p>
         </div>
-        <Button onClick={() => router.push("/dashboard/student/courses")}>
-          Browse Courses <ChevronRight className="ml-2 h-4 w-4" />
-        </Button>
+
+        <div className="flex items-center gap-3">
+          <Button onClick={() => router.push("/dashboard/student/courses")}>
+            Browse Courses <ChevronRight className="ml-2 h-4 w-4" />
+          </Button>
+        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-4 mb-10">
-        <OverviewCard icon={Book} title="Courses Enrolled" value={stats.totalCourses} subtitle={`${stats.activeCourses ?? 0} active`} />
-        <OverviewCard icon={Clock} title="Hours Spent" value="50 hrs" subtitle="Past 30 days" />
-        <OverviewCard icon={Medal} title="Certificates" value={stats.completedCourses} subtitle="Courses completed" />
-        <OverviewCard icon={Target} title="Progress" value="40%" subtitle="Average" />
-      </div>
+      <motion.div layout className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <OverviewCard icon={Book} title="Courses Enrolled" value={totalCourses} subtitle="Enrolled Courses"/>
+        <OverviewCard icon={Clock} title="Attendance Progress" value={`${attendancePercent}%`} subtitle="Based on attendance" />
+        <OverviewCard icon={Trophy} title="Assessments Completed" value={assessmentsCompleted} subtitle="Completed attempts" />
+        <OverviewCard icon={Target} title="Video Progress" value={`${videoProgressPercent}%`} subtitle="Based on watched videos" />
+      </motion.div>
 
       <Tabs defaultValue="active">
         <TabsList>
           <TabsTrigger value="active">Active Courses</TabsTrigger>
-          <TabsTrigger value="certificates">Certificates</TabsTrigger>
-          <TabsTrigger value="goals">Goals</TabsTrigger>
+          <TabsTrigger value="assessment">Assessment</TabsTrigger>
           <TabsTrigger value="puzzles">Chess Puzzles</TabsTrigger>
-          <TabsTrigger value="leaderboard">Leaderboard</TabsTrigger>
         </TabsList>
 
+        {/* Active courses: show only course name and level */}
         <TabsContent value="active">
-          {activeCourses.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              {activeCourses.map((course) => (
-                <Card key={course.id}>
-                  <div className="relative aspect-video">
-                    <img src={course.thumbnail} className="w-full h-full object-cover" alt={course.title} />
-                    <div className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 hover:opacity-100 transition">
-                      <Button onClick={() => handleCourseClick(course.id)}>
-                        <PlayCircle className="h-4 w-4 mr-2" /> Continue
-                      </Button>
-                    </div>
-                  </div>
-                  <CardContent className="p-4 space-y-2">
-                    <h3 className="font-semibold line-clamp-1">{course.title}</h3>
-                    <div className="text-sm text-muted-foreground">
-                      {course.teacher?.firstName} {course.teacher?.lastName}
-                    </div>
-                    <Progress value={course.progress ?? 0} className="h-2" />
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <p className="text-center text-muted-foreground py-8">No active courses yet.</p>
-          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-6">
+            <AnimatePresence>
+              {activeCourses.length === 0 && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="col-span-full text-center py-8">
+                  No active courses found.
+                </motion.div>
+              )}
+
+              {activeCourses.map((c, idx) => {
+                // c may be { id, title } or { title } or plain string; also may include level
+                const title = c?.title ?? (typeof c === "string" ? c : "Untitled");
+                const level = c?.level ?? (c?.title && c?.level === undefined ? "" : c?.level) ?? (c?.level === "" ? "" : c?.level);
+                return (
+                  <motion.div
+                    key={c.id ?? title ?? idx}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: 6 }}
+                    transition={{ delay: idx * 0.04 }}
+                  >
+                    <Card>
+                      <CardContent className="flex items-center gap-4 p-4">
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between">
+                            <div>
+                              <h3 className="text-lg font-semibold">{title}</h3>
+                              {level ? <p className="text-xs text-muted-foreground mt-1">Level: <span className="font-medium">{level}</span></p> : null}
+                            </div>
+
+                            {/* optional small progress indicator */}
+                            <div className="text-right">
+                             <div className="flex items-center gap-3">
+          <Button onClick={() => router.push("/dashboard/student/courses")}>
+            Go to Course <ChevronRight className="ml-2 h-4 w-4" />
+          </Button>
+        </div>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                );
+              })}
+            </AnimatePresence>
+          </div>
         </TabsContent>
 
-        <TabsContent value="certificates">
-          {(certificates.length > 0) ? (
-            <div className="grid gap-4 md:grid-cols-2">
-              {certificates.map(cert => (
-                <Card key={cert.id}>
-                  <CardContent className="p-6">
-                    <h3 className="font-semibold mb-1">{cert.courseTitle}</h3>
-                    <p className="text-sm text-muted-foreground mb-2">
-                      Completed on {new Date(cert.completedAt).toLocaleDateString()}
-                    </p>
-                    <Button variant="outline" onClick={() => window.open(cert.url, '_blank')}>View Certificate</Button>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <p className="text-center text-muted-foreground py-8">No certificates yet.</p>
-          )}
-        </TabsContent>
+        {/* Assessment tab: show as 'Assessment 1', 'Assessment 2' and highlight score */}
+        <TabsContent value="assessment">
+          <div className="py-6">
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+              <h2 className="text-lg font-semibold">Completed Assessments</h2>
+              <p className="text-sm text-muted-foreground">You have completed <strong>{assessmentsCompleted}</strong> assessment(s).</p>
 
-        <TabsContent value="goals">
-          {(goals.length > 0) ? (
-            <div className="space-y-4">
-              {goals.map(goal => (
-                <Card key={goal.id}>
-                  <CardContent className="p-4 flex justify-between items-center">
-                    <div>
-                      <h3 className="font-semibold">{goal.title}</h3>
-                      <p className="text-sm text-muted-foreground">Due {new Date(goal.dueDate).toLocaleDateString()}</p>
-                    </div>
-                    <Progress value={goal.progress ?? 0} className="w-24 h-2" />
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          ) : (
-            <p className="text-center text-muted-foreground py-8">No goals set yet.</p>
-          )}
+              <div className="mt-4 space-y-3">
+                {assessmentsCompleted === 0 && (
+                  <div className="text-sm text-muted-foreground">No completed assessments yet.</div>
+                )}
+
+                {assessments.map((a, i) => {
+                  // a may have assessment_id, score, completed_at
+                  const label = `Assessment ${i + 1}`;
+                  const score = a?.score ?? null;
+                  return (
+                    <motion.div key={a.id ?? i} initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} className="p-4 border rounded-md flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-medium">{label}</div>
+                        <div className="text-xs text-muted-foreground">Attempted on: {a.completed_at ? new Date(a.completed_at).toLocaleDateString() : "—"}</div>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        <ScoreBadge score={score} />
+                      </div>
+                    </motion.div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </div>
         </TabsContent>
 
         <TabsContent value="puzzles">
-          <div className="text-center py-8">
-            <Puzzle className="mx-auto mb-2 h-10 w-10 text-muted-foreground" />
-            <p className="text-lg font-medium">Chess Puzzles coming soon!</p>
-            <p className="text-muted-foreground">Improve tactics by solving daily puzzles.</p>
-          </div>
-        </TabsContent>
-
-        <TabsContent value="leaderboard">
-          <div className="text-center py-8">
-            <Trophy className="mx-auto mb-2 h-10 w-10 text-muted-foreground" />
-            <p className="text-lg font-medium">Leaderboard feature coming soon!</p>
-            <p className="text-muted-foreground">Compete with your peers and climb the rankings.</p>
-          </div>
+          <div className="text-center py-8">Chess Puzzles coming soon!</div>
         </TabsContent>
       </Tabs>
     </div>
   );
 }
-
-export default StudentDashboard;

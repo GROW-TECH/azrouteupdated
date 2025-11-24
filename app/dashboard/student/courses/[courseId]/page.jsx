@@ -1,250 +1,98 @@
+// pages/courses/[courseId]/videos/index.jsx
 "use client";
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { Card, CardContent, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
-import { Progress } from "@/components/ui/progress";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { useToast } from "@/components/ui/use-toast";
-import { Clock, BookOpen, Play, CheckCircle, FileText, Users, Star, DollarSign, Lock, Video } from "lucide-react";
-import { loadStripe } from '@stripe/stripe-js';
+import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
+import { supabase } from "@/lib/supabaseClient"; // adjust path
+import Link from "next/link";
 
-// Initialize Stripe
-const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
-
-export default function CourseDetailsPage({ params }) {
+export default function CourseVideosListPage() {
   const router = useRouter();
-  const { toast } = useToast();
-  const { courseId } = params; // ✅ Correct extraction
-
+  const { courseId } = router.query;
   const [course, setCourse] = useState(null);
-  const [enrollment, setEnrollment] = useState(null);
+  const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [processingPurchase, setProcessingPurchase] = useState(false);
+  const BUCKET = "course_videos";
 
   useEffect(() => {
-    const fetchCourseDetails = async () => {
+    if (!courseId) return;
+    setLoading(true);
+    (async () => {
       try {
-        const response = await fetch(`/api/student/courses/${courseId}`);
-        if (!response.ok) throw new Error('Failed to fetch course details');
-        const data = await response.json();
+        // fetch course meta
+        const { data: courseData, error: courseErr } = await supabase
+          .from("course")
+          .select("id, title, level")
+          .eq("id", courseId)
+          .maybeSingle();
+        if (courseErr) throw courseErr;
+        setCourse(courseData || null);
 
-        // Provide defaults to avoid undefined errors
-        const courseData = {
-          sections: [],
-          objectives: [],
-          prerequisites: 'No prerequisites required',
-          ...data.course,
-        };
-
-        setCourse(courseData);
-        setEnrollment(data.enrollment || null);
+        // fetch published videos for this course
+        const { data: vrows, error: vErr } = await supabase
+          .from("course_videos")
+          .select("id, video_title, video_path, published, created_at")
+          .eq("course_id", courseId)
+          .eq("published", true)
+          .order("created_at", { ascending: true });
+        if (vErr) throw vErr;
+        setVideos(vrows || []);
       } catch (err) {
-        setError(err.message);
+        console.error("Failed to load course videos:", err);
+        setVideos([]);
       } finally {
         setLoading(false);
       }
-    };
-
-    fetchCourseDetails();
+    })();
   }, [courseId]);
 
-  const handlePurchase = async () => {
-    try {
-      setProcessingPurchase(true);
-      const response = await fetch('/api/student/courses/purchase', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courseId: course.id }),
-      });
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Failed to process purchase');
-      }
-
-      const { sessionId } = await response.json();
-      const stripe = await stripePromise;
-      await stripe.redirectToCheckout({ sessionId });
-
-    } catch (err) {
-      toast({ title: "Error", description: err.message, variant: "destructive" });
-    } finally {
-      setProcessingPurchase(false);
-    }
-  };
-
-  const startCourse = (lessonId) => {
-    router.push(`/dashboard/student/courses/${courseId}/learn/${lessonId}`);
-  };
-
-  if (loading) return (
-    <div className="flex items-center justify-center min-h-screen">
-      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-    </div>
-  );
-
-  if (error) return (
-    <div className="p-8">
-      <Alert variant="destructive">
-        <AlertDescription>{error}</AlertDescription>
-      </Alert>
-    </div>
-  );
+  if (!courseId) return <div>Loading…</div>;
+  if (loading) return <div className="p-4">Loading videos…</div>;
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
-      {/* Course Header */}
-      <div className="grid gap-6 md:grid-cols-3 mb-8">
-        <div className="md:col-span-2 space-y-4">
-          <h1 className="text-3xl font-bold tracking-tight">{course.title}</h1>
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">
-              <Clock className="h-3 w-3 mr-1" />
-              {Math.ceil((course.totalDuration || 0) / 60)} hours
-            </Badge>
-            <Badge variant="secondary">
-              <BookOpen className="h-3 w-3 mr-1" />
-              {course.totalLessons || 0} lessons
-            </Badge>
-            <Badge variant="secondary">
-              <Users className="h-3 w-3 mr-1" />
-              {course.enrollments || 0} students
-            </Badge>
-            {course.rating > 0 && (
-              <Badge variant="secondary">
-                <Star className="h-3 w-3 mr-1" />
-                {course.rating.toFixed(1)}
-              </Badge>
-            )}
-            <Badge>{course.level}</Badge>
-          </div>
-          <p className="text-muted-foreground">{course.description}</p>
+    <div className="p-6">
+      <h1 className="text-2xl font-semibold mb-4">{course?.title || "Course"} — Videos</h1>
+
+      {videos.length === 0 ? (
+        <div>No videos published for this course yet.</div>
+      ) : (
+        <div className="space-y-3">
+          {videos.map((v, idx) => (
+            <div key={v.id} className="p-3 border rounded flex items-center justify-between">
+              <div>
+                <div className="font-medium">
+                  {v.video_title || `Video ${idx + 1}`}
+                </div>
+                <div className="text-sm text-gray-500">{v.video_path}</div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {/* Link to video player page */}
+                <Link href={`/courses/${courseId}/videos/${v.id}`}>
+                  <a className="px-3 py-1 bg-blue-600 text-white rounded">Watch</a>
+                </Link>
+                {/* Optional: preview open in new tab using signed url */}
+                <button
+                  className="px-3 py-1 border rounded"
+                  onClick={async () => {
+                    const p = String(v.video_path).replace(/^\/+/, "");
+                    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(p, 60 * 60);
+                    const url = data?.signedUrl || data?.signedURL || data?.publicUrl;
+                    if (error || !url) {
+                      alert("Preview not available");
+                      console.error(error);
+                      return;
+                    }
+                    window.open(url, "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  Preview
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
-
-        {/* Purchase/Progress Card */}
-        <Card className="h-fit">
-          <CardContent className="pt-6">
-            {enrollment ? (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span>Progress</span>
-                    <span>{Math.round(enrollment.progress)}%</span>
-                  </div>
-                  <Progress value={enrollment.progress} className="h-2" />
-                </div>
-                <Button className="w-full" onClick={() => startCourse(enrollment.lastAccessedLessonId)}>
-                  {enrollment.progress === 0 ? (
-                    <>
-                      <Play className="h-4 w-4 mr-2" />
-                      Start Learning
-                    </>
-                  ) : (
-                    <>
-                      <Video className="h-4 w-4 mr-2" />
-                      Continue Learning
-                    </>
-                  )}
-                </Button>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="text-center">
-                  <p className="text-3xl font-bold">
-                    {Number(course.price) === 0 ? 'Free' : `₹${course.price}`}
-                  </p>
-                  {course.price > 0 && <p className="text-sm text-muted-foreground">One-time payment</p>}
-                </div>
-                <Button className="w-full" onClick={handlePurchase} disabled={processingPurchase}>
-                  {processingPurchase ? (
-                    <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
-                  ) : (
-                    <>
-                      <DollarSign className="h-4 w-4 mr-2" />
-                      {course.price === 0 ? 'Enroll Now' : 'Purchase Course'}
-                    </>
-                  )}
-                </Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Course Content */}
-      <Tabs defaultValue="curriculum" className="space-y-6">
-        <TabsList>
-          <TabsTrigger value="curriculum"><BookOpen className="h-4 w-4 mr-2" />Curriculum</TabsTrigger>
-          <TabsTrigger value="overview"><FileText className="h-4 w-4 mr-2" />Overview</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="curriculum">
-          <Card>
-            <CardHeader>
-              <CardTitle>Course Content</CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {course.totalLessons || 0} lessons • {Math.ceil((course.totalDuration || 0) / 60)} hours total
-              </p>
-            </CardHeader>
-            <CardContent>
-              <Accordion type="single" collapsible className="w-full">
-                {course.sections.map((section, idx) => (
-                  <AccordionItem key={idx} value={`section-${idx}`}>
-                    <AccordionTrigger className="hover:no-underline">
-                      <div className="flex items-start">
-                        <span className="font-medium">{section.title}</span>
-                        <span className="ml-2 text-sm text-muted-foreground">{section.lessons?.length || 0} lessons</span>
-                      </div>
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="space-y-2">
-                        {section.lessons?.map((lesson, lidx) => {
-                          const isCompleted = enrollment?.lessonsProgress?.find(p => p.lessonId === lesson._id)?.completed;
-                          return (
-                            <div key={lidx} className="flex items-center justify-between p-2 rounded-lg hover:bg-secondary/50">
-                              <div className="flex items-center space-x-2">
-                                {enrollment ? (
-                                  isCompleted ? <CheckCircle className="h-4 w-4 text-primary" /> : <Play className="h-4 w-4" />
-                                ) : <Lock className="h-4 w-4" />}
-                                <span>{lesson.title}</span>
-                              </div>
-                              <span className="text-sm text-muted-foreground">{Math.ceil(lesson.duration / 60)} min</span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="overview">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="prose prose-sm max-w-none">
-                <h3>Prerequisites</h3>
-                <p>{course.prerequisites}</p>
-
-                <h3 className="mt-6">Learning Objectives</h3>
-                {course.objectives.length > 0 ? (
-                  <ul>
-                    {course.objectives.map((obj, i) => <li key={i}>{obj}</li>)}
-                  </ul>
-                ) : <p>No specific objectives listed</p>}
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+      )}
     </div>
   );
 }
