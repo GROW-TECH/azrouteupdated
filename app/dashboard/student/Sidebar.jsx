@@ -37,13 +37,13 @@ const Sidebar = () => {
     { icon: FileText, label: "Assessment", href: "/dashboard/student/assessment" },
     { icon: CalendarClock, label: "Schedule", href: "/dashboard/student/schedule" },
     { icon: CreditCard, label: "Payment", href: "/dashboard/student/Payment" },
-    { icon: BrainCircuit, label: "AI-Based Assessment", href: "/dashboard/student/ai-assessment" },
-    {
-      icon: ChessKnight,
-      label: "Puzzles",
-      href: "/dashboard/student/puzzles",
-      children: [{ label: "My Puzzle", href: "/dashboard/student/puzzles/daily" }],
-    },
+    { icon: BrainCircuit, label: "AI Assessment", href: "/dashboard/student/ai-assessment" },
+    // {
+    //   icon: ChessKnight,
+    //   label: "Puzzles",
+    //   href: "/dashboard/student/puzzles",
+    //   children: [{ label: "My Puzzle", href: "/dashboard/student/puzzles/daily" }],
+    // },
   ];
 
   const getUserInitials = () => {

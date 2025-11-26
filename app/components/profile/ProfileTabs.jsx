@@ -6,7 +6,7 @@ import { LearningProgress } from "./LearningProgress";
 import { Certifications } from "./Certifications";
 import { Reviews } from "./Reviews";
 
-export function ProfileTabs({ user, isEditable }) {
+export default function ProfileTabs({ user, isEditable }) {
   const isTeacher = user.role === 'teacher';
 
   return (
@@ -18,37 +18,7 @@ export function ProfileTabs({ user, isEditable }) {
         >
           About
         </TabsTrigger>
-        {/* {isTeacher ? (
-          <>
-            <TabsTrigger
-              value="teaching"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
-            >
-              Teaching
-            </TabsTrigger>
-            <TabsTrigger
-              value="reviews"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
-            >
-              Reviews
-            </TabsTrigger>
-          </>
-        ) : (
-          <>
-            <TabsTrigger
-              value="progress"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
-            >
-              Learning Progress
-            </TabsTrigger>
-            <TabsTrigger
-              value="certifications"
-              className="rounded-none border-b-2 border-transparent data-[state=active]:border-primary"
-            >
-              Certifications
-            </TabsTrigger>
-          </>
-        )} */}
+        {/* Uncomment & use other triggers if needed */}
       </TabsList>
       <div className="mt-6">
         <TabsContent value="about">

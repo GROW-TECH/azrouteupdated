@@ -1,6 +1,6 @@
 'use client';
-import { ProfileHeader } from "@/components/profile/ProfileHeader";
-import { ProfileTabs } from "@/components/profile/ProfileTabs";
+import ProfileHeader from "@/app/components/profile/ProfileHeader";
+import ProfileTabs from "@/app/components/profile/ProfileTabs";
 import axios from "axios";
 import { useEffect, useState } from "react";
 
@@ -24,9 +24,7 @@ export default function TeacherProfilePage() {
   return (
     <div className="min-h-screen bg-background">
       <ProfileHeader user={teacher} isEditable={true} />
-      <div className="py-8">
-        <ProfileTabs user={teacher} isEditable={true} />
-      </div>
+      
     </div>
   );
 }

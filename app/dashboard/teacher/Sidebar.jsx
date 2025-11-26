@@ -71,8 +71,7 @@ const Sidebar = () => {
     { icon: TrendingUp, label: "Progress", href: "/dashboard/teacher/progress" },
     { icon: ClipboardList, label: "Assessments", href: "/dashboard/teacher/assessment" },
     { icon: Calendar, label: "Events", href: "/dashboard/teacher/events" },
-    { icon: MessageSquare, label: "Live Classes", href: "/dashboard/teacher/livestreams" },
-    { icon: FileText, label: "Add Marks", href: "/dashboard/teacher/marks" },
+    { icon: MessageSquare, label: "Live Classes", href: "/dashboard/teacher/liveclasses" },
     { icon: Video, label: "Demo Class", href: "/dashboard/teacher/demo-class" },
   ];
 

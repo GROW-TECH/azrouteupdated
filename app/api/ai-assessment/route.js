@@ -80,6 +80,7 @@ export async function POST(req) {
       return NextResponse.json({ questions }, { status: 200, headers: { "Cache-Control": "no-store" } });
     }
 
+    // production OpenAI call (kept minimal)
     const nonce = body.nonce ?? String(Math.floor(Math.random() * 1e9));
     const randomTag = Math.random().toString(36).slice(2, 8);
     const system = `You are a chess assessment generator. Return only strict JSON — a single object: {"questions":[ ... ]}. Each question object must have "prompt" (string), "choices" (array of up to 4 strings) and "correctIndex" (0-based integer). Do NOT include extra text.`;
@@ -135,62 +136,120 @@ export async function POST(req) {
   }
 }
 
-/** PUT - save results into public.aiassessments. Resolves user from token or body.userId */
+/** PUT - save results into public.aiassessments */
 export async function PUT(req) {
   try {
     const body = await req.json().catch(() => ({}));
-    const { userId: bodyUserId, questions, answers, startedAt, finishedAt } = body;
+    console.log("PUT /api/ai-assessment incoming body:", body && typeof body === "object" ? JSON.stringify(body).slice(0, 2000) : body);
 
-    const SUPABASE_URL = process.env.SUPABASE_URL;
-    const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    // KEY CHANGE: Extract userEmail and userName from body
+    const { 
+      userId: bodyUserId, 
+      userEmail: bodyUserEmail, 
+      userName: bodyUserName, 
+      questions, 
+      answers, 
+      startedAt, 
+      finishedAt 
+    } = body;
+
+    // Supabase configuration
+    const SUPABASE_URL = (process.env.SUPABASE_URL && process.env.SUPABASE_URL.trim()) || (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_URL.trim());
+    let rawServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (rawServiceKey && rawServiceKey.includes("#")) {
+      rawServiceKey = rawServiceKey.split("#")[0].trim();
+    }
+    const SUPABASE_SERVICE_KEY = rawServiceKey && rawServiceKey.length > 0 ? rawServiceKey : undefined;
 
     if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+      console.error("PUT: Supabase env missing", { SUPABASE_URL: Boolean(SUPABASE_URL), SUPABASE_SERVICE_KEY: Boolean(SUPABASE_SERVICE_KEY) });
       return NextResponse.json({ saved: false, reason: "Supabase not configured" }, { status: 500 });
     }
 
-    // admin client (service role) for safe inserts and token verification
     const supabase = createSupabaseClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
       auth: { persistSession: false },
     });
 
-    // 1) Try to resolve user from Authorization header (preferred)
+    // User resolution with priority: Auth token > body parameters
     let resolvedUserId = null;
+    let studentEmail = bodyUserEmail || null;
+    let studentName = bodyUserName || null;
+    let resolvedStudentId = null;
+
     try {
+      // First priority: JWT token from Authorization header
       const authHeader = (req.headers.get("authorization") || "").replace("Bearer ", "").trim();
       if (authHeader) {
         const { data: userData, error: userErr } = await supabase.auth.getUser(authHeader);
-        if (!userErr && userData?.user?.id) {
+        if (!userErr && userData?.user) {
           resolvedUserId = userData.user.id;
-        } else {
-          // not fatal — we'll fall back to body.userId later
-          console.warn("PUT: cannot resolve user from token:", userErr);
+          // Use auth user's email and name as primary source, but don't override body parameters if they exist
+          studentEmail = studentEmail || userData.user.email;
+          studentName = studentName || 
+                       userData.user.user_metadata?.full_name || 
+                       userData.user.user_metadata?.name || 
+                       userData.user.email?.split('@')[0];
         }
       }
-    } catch (err) {
-      console.warn("PUT: error while resolving user from token:", err);
+    } catch (e) {
+      console.warn("PUT: token resolve error", e);
     }
 
-    // 2) Fallback to body.userId (client-provided Supabase auth UUID)
-    const finalUserId = resolvedUserId ?? bodyUserId ?? null;
+    // Final user ID fallback
+    const finalUserId = resolvedUserId || bodyUserId || null;
 
-    // compute totals & score
-    const totalPuzzles = Array.isArray(questions) ? questions.length : 0;
+    // If we still don't have email/name and have a user ID, try to resolve from coaches or student_list
+    if ((!studentEmail || !studentName) && finalUserId) {
+      try {
+        // Try coaches table first
+        const { data: coach, error: coachErr } = await supabase
+          .from("coaches")
+          .select("id, name, email")
+          .or(`id.eq.${finalUserId},email.eq.${studentEmail}`)
+          .maybeSingle();
 
-    let correctCount = null;
-    try {
-      if (Array.isArray(questions) && questions.length > 0) {
-        const haveCorrectIds = questions.every((q) => typeof q.correctChoiceId !== "undefined");
-        if (haveCorrectIds && answers && typeof answers === "object") {
-          correctCount = questions.reduce((acc, q) => acc + (answers[q.id] === q.correctChoiceId ? 1 : 0), 0);
-        } else {
-          correctCount = null; // unable to grade reliably
+        if (!coachErr && coach) {
+          studentEmail = studentEmail || coach.email;
+          studentName = studentName || coach.name;
         }
-      } else {
-        correctCount = 0;
+
+        // Then try student_list
+        if (!studentEmail || !studentName) {
+          const { data: student, error: studentErr } = await supabase
+            .from("student_list")
+            .select("id, name, email")
+            .or(`id.eq.${finalUserId},email.eq.${studentEmail}`)
+            .maybeSingle();
+
+          if (!studentErr && student) {
+            resolvedStudentId = student.id;
+            studentEmail = studentEmail || student.email;
+            studentName = studentName || student.name;
+          }
+        }
+      } catch (e) {
+        console.warn("PUT: user lookup error:", e);
       }
-    } catch (err) {
-      console.warn("PUT: error computing correctCount:", err);
-      correctCount = null;
+    }
+
+    // Calculate score
+    const totalPuzzles = Array.isArray(questions) ? questions.length : 0;
+    let correctCount = null;
+    if (Array.isArray(questions) && questions.length > 0) {
+      const allHaveCorrect = questions.every((q) => typeof q.correctChoiceId !== "undefined");
+      if (allHaveCorrect && answers && typeof answers === "object") {
+        correctCount = questions.reduce((acc, q) => acc + (answers[q.id] === q.correctChoiceId ? 1 : 0), 0);
+      } else {
+        correctCount = null;
+      }
+    } else {
+      correctCount = 0;
+    }
+
+    // Compute percentage (2 decimal places) when possible
+    let scorePct = null;
+    if (correctCount !== null && totalPuzzles > 0) {
+      scorePct = Number(((correctCount / totalPuzzles) * 100).toFixed(2));
     }
 
     const details = {
@@ -202,22 +261,34 @@ export async function PUT(req) {
       },
     };
 
+    // Insert payload - KEY CHANGE: Now student_email and student_name will always have values from body or auth
     const insertPayload = {
       user_id: finalUserId,
+      student_id: resolvedStudentId ?? null,
+      student_email: studentEmail, // This will now always have a value from body or auth
+      student_name: studentName,   // This will now always have a value from body or auth
       total_puzzles: totalPuzzles,
       correct_count: correctCount,
+      score_pct: scorePct,
       started_at: startedAt ? new Date(startedAt).toISOString() : null,
       finished_at: finishedAt ? new Date(finishedAt).toISOString() : new Date().toISOString(),
       details,
     };
 
-    const { data, error } = await supabase.from("aiassessments").insert(insertPayload).select().single();
+    console.log("Inserting assessment with email:", studentEmail, "and name:", studentName);
+
+    const { data, error } = await supabase
+      .from("aiassessments")
+      .insert(insertPayload)
+      .select()
+      .single();
 
     if (error) {
       console.error("Supabase insert error (aiassessments):", error);
-      return NextResponse.json({ saved: false, error: error.message }, { status: 500 });
+      return NextResponse.json({ saved: false, error: error.message || error }, { status: 500 });
     }
 
+    console.log("Inserted aiassessment id:", data?.id, "for email:", studentEmail);
     return NextResponse.json({ saved: true, record: data }, { status: 200 });
   } catch (err) {
     console.error("PUT /api/ai-assessment error:", err);

@@ -1,335 +1,208 @@
 // app/dashboard/teacher/events/page.jsx
 "use client";
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { useToast } from "@/components/ui/use-toast";
-import { 
-  Calendar,
-  Search,
-  Plus,
-  Filter,
-  Users,
-  Clock,
-  MapPin,
-  Video,
-  MoreVertical,
-  Edit2,
-  Trash2,
-  Copy
-} from "lucide-react";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { useState, useEffect, useRef } from "react";
+import { Card, CardContent } from "@/app/components/ui/card";
+import { Input } from "@/app/components/ui/input";
+import { Search, Calendar, MapPin } from "lucide-react";
+import { useToast } from "@/app/components/ui/use-toast";
+import { Button } from "@/app/components/ui/button";
+
+/**
+ * Events list (only published). Colorful header, shows location from student_events.location.
+ * - search is debounced
+ * - single-open accordion
+ * - location priority: ev.location (string) || ev.location.venue || ev.venue || ev.raw.location || '-'
+ */
 
 export default function TeacherEvents() {
-  const router = useRouter();
   const { toast } = useToast();
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filters, setFilters] = useState({
-    status: 'all',
-    type: 'all',
-    search: ''
-  });
+  const [search, setSearch] = useState("");
+  const [openId, setOpenId] = useState(null); // single-open accordion
+  const debounceRef = useRef(null);
+
+  // debounced fetch: call fetchEvents with latest query after delay
+  const DEBOUNCE_MS = 320;
 
   useEffect(() => {
-    fetchEvents();
-  }, [filters]);
+    // initial load
+    fetchEvents("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const fetchEvents = async () => {
+  useEffect(() => {
+    // debounce fetch when search changes
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      fetchEvents(search.trim());
+    }, DEBOUNCE_MS);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+
+  async function fetchEvents(q = "") {
+    setLoading(true);
     try {
-      const searchParams = new URLSearchParams({
-        ...filters,
+      const params = new URLSearchParams({
+        search: q || "",
+        status: "published",
         page: 1,
-        limit: 10
+        limit: 200,
       });
+      const res = await fetch(`/api/teacher/events?${params.toString()}`, { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch events");
+      const data = await res.json();
+      const items = data.events ?? data ?? [];
 
-      const response = await fetch(`/api/teacher/events?${searchParams}`, {
-        credentials: 'include'
-      });
+      const normalized = (items || []).map((ev) => {
+        // determine a plain string location from multiple possible shapes
+        let loc = null;
+        try {
+          if (typeof ev.location === "string" && ev.location.trim()) loc = ev.location.trim();
+          else if (ev.location && typeof ev.location === "object") {
+            if (typeof ev.location.venue === "string" && ev.location.venue.trim()) loc = ev.location.venue.trim();
+            else if (typeof ev.location.name === "string" && ev.location.name.trim()) loc = ev.location.name.trim();
+          }
+          if (!loc && typeof ev.venue === "string" && ev.venue.trim()) loc = ev.venue.trim();
+          if (!loc && ev.raw && typeof ev.raw.location === "string" && ev.raw.location.trim()) loc = ev.raw.location.trim();
+        } catch (e) {
+          // ignore and fallback to null
+        }
+        if (!loc) loc = null;
 
-      if (!response.ok) {
-        throw new Error('Failed to fetch events');
-      }
+        return {
+          id: String(ev.id ?? ev._id ?? ev.event_id ?? ""),
+          title: ev.title ?? ev.name ?? "Untitled event",
+          startDate: ev.date ?? ev.startDate ?? ev.start_date ?? null,
+          endDate: ev.endDate ?? ev.end_date ?? null,
+          location: loc, // string or null
+          description: ev.description ?? "",
+          type: ev.type ?? ev.category ?? "",
+          raw: ev,
+        };
+      }).filter(e => e.id);
 
-      const data = await response.json();
-      setEvents(data.events);
-    } catch (error) {
-      console.error('Error fetching events:', error);
-      toast({
-        title: "Error",
-        description: "Failed to load events",
-        variant: "destructive"
-      });
+      setEvents(normalized);
+    } catch (err) {
+      console.error("fetchEvents error:", err);
+      toast({ title: "Error", description: "Unable to load events", variant: "destructive" });
+      setEvents([]);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const handleStatusChange = async (eventId, newStatus) => {
+  const fmtDate = (d) => {
+    if (!d) return "-";
     try {
-      const response = await fetch(`/api/teacher/events/${eventId}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ status: newStatus })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to update event status');
-      }
-
-      toast({
-        title: "Success",
-        description: "Event status updated successfully"
-      });
-
-      fetchEvents();
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: error.message,
-        variant: "destructive"
-      });
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return "-";
+      return dt.toLocaleDateString();
+    } catch {
+      return "-";
     }
   };
 
-  const copyEventLink = (eventId) => {
-    const link = `${window.location.origin}/events/${eventId}`;
-    navigator.clipboard.writeText(link);
-    toast({
-      title: "Success",
-      description: "Event link copied to clipboard"
-    });
+  const toggle = (id) => {
+    setOpenId(prev => (prev === id ? null : id)); // single-open
   };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      </div>
-    );
-  }
 
   return (
     <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Events</h1>
-          <p className="text-muted-foreground">
-            Manage your workshops, conferences, and other events
-          </p>
-        </div>
-        <Button onClick={() => router.push('/dashboard/teacher/events/create')}>
-          <Plus className="h-4 w-4 mr-2" />
-          Create Event
-        </Button>
-      </div>
+      <div className="max-w-5xl mx-auto">
+        <h1 className="text-2xl font-semibold mb-2">All Events - Published events</h1>
 
-      {/* Filters */}
-      <Card className="mb-6">
-        <CardContent className="py-4">
-          <div className="flex flex-col sm:flex-row gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-              <Input
-                placeholder="Search events..."
-                value={filters.search}
-                onChange={(e) => setFilters(prev => ({ ...prev, search: e.target.value }))}
-                className="pl-9"
-              />
-            </div>
-            <Select
-              value={filters.type}
-              onValueChange={(value) => setFilters(prev => ({ ...prev, type: value }))}
-            >
-              <SelectTrigger className="w-[200px]">
-                <Filter className="h-4 w-4 mr-2" />
-                <SelectValue placeholder="Event Type" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Types</SelectItem>
-                <SelectItem value="workshop">Workshop</SelectItem>
-                <SelectItem value="conference">Conference</SelectItem>
-                <SelectItem value="webinar">Webinar</SelectItem>
-                <SelectItem value="bootcamp">Bootcamp</SelectItem>
-                <SelectItem value="masterclass">Masterclass</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select
-              value={filters.status}
-              onValueChange={(value) => setFilters(prev => ({ ...prev, status: value }))}
-            >
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="draft">Draft</SelectItem>
-                <SelectItem value="published">Published</SelectItem>
-                <SelectItem value="cancelled">Cancelled</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-              </SelectContent>
-            </Select>
+        {/* <div className="mb-6">
+          <div className="relative max-w-xl">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Input
+              placeholder="Search events (title or description)..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-9"
+            />
           </div>
-        </CardContent>
-      </Card>
+        </div> */}
 
-      {/* Events List */}
-      <div className="grid gap-6">
-        {events.length === 0 ? (
-          <Card className="py-12">
-            <CardContent className="flex flex-col items-center justify-center text-center">
-            <Calendar className="h-12 w-12 text-muted-foreground mb-4" />
-              <h3 className="font-semibold mb-1">No events found</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Get started by creating your first event
-              </p>
-              <Button onClick={() => router.push('/dashboard/teacher/events/create')}>
-                <Plus className="h-4 w-4 mr-2" />
-                Create Event
-              </Button>
-            </CardContent>
-          </Card>
+        {loading ? (
+          <div className="text-center py-16 text-gray-500">Loading…</div>
+        ) : events.length === 0 ? (
+          <div className="text-center py-16 text-gray-500">No published events found.</div>
         ) : (
-          events.map((event) => (
-            <Card key={event._id} className="hover:shadow-md transition-shadow">
-              <CardContent className="p-6">
-                <div className="flex items-start justify-between">
-                  <div className="flex space-x-4">
-                    <div className="w-48 h-32 rounded-lg overflow-hidden bg-gray-100">
-                      <img
-                        src={event.thumbnail}
-                        alt={event.title}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center space-x-2 mb-2">
-                        <h3 className="font-semibold text-lg">{event.title}</h3>
-                        <Badge variant={
-                          event.status === 'published' ? 'success' :
-                          event.status === 'draft' ? 'secondary' :
-                          event.status === 'cancelled' ? 'destructive' :
-                          'default'
-                        }>
-                          {event.status.charAt(0).toUpperCase() + event.status.slice(1)}
-                        </Badge>
-                      </div>
-                      <p className="text-muted-foreground text-sm mb-4 line-clamp-2">
-                        {event.description}
-                      </p>
-                      <div className="flex flex-wrap gap-4 text-sm">
-                        <div className="flex items-center text-muted-foreground">
-                          <Calendar className="h-4 w-4 mr-2" />
-                          {new Date(event.startDate).toLocaleDateString()} - {new Date(event.endDate).toLocaleDateString()}
-                        </div>
-                        <div className="flex items-center text-muted-foreground">
-                          <Clock className="h-4 w-4 mr-2" />
-                          {new Date(event.startDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                        <div className="flex items-center text-muted-foreground">
-                          {event.location.type === 'online' ? (
-                            <Video className="h-4 w-4 mr-2" />
-                          ) : (
-                            <MapPin className="h-4 w-4 mr-2" />
-                          )}
-                          {event.location.type === 'online' ? 'Online Event' : event.location.venue}
-                        </div>
-                        <div className="flex items-center text-muted-foreground">
-                          <Users className="h-4 w-4 mr-2" />
-                          {event.currentRegistrations}/{event.maximumRegistrations} registered
-                        </div>
-                      </div>
-                    </div>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          onClick={() => router.push(`/dashboard/teacher/events/${event._id}`)}
-                        >
-                          View Details
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => router.push(`/dashboard/teacher/events/${event._id}/edit`)}
-                        >
-                          <Edit2 className="h-4 w-4 mr-2" />
-                          Edit Event
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => copyEventLink(event._id)}
-                        >
-                          <Copy className="h-4 w-4 mr-2" />
-                          Copy Link
-                        </DropdownMenuItem>
-                        {event.status === 'draft' && (
-                          <DropdownMenuItem
-                            onClick={() => handleStatusChange(event._id, 'published')}
-                          >
-                            Publish
-                          </DropdownMenuItem>
-                        )}
-                        {event.status === 'published' && (
-                          <DropdownMenuItem
-                            onClick={() => handleStatusChange(event._id, 'cancelled')}
-                            className="text-red-600"
-                          >
-                            Cancel Event
-                          </DropdownMenuItem>
-                        )}
-                        {event.status === 'draft' && (
-                          <DropdownMenuItem
-                            onClick={() => handleStatusChange(event._id, 'deleted')}
-                            className="text-red-600"
-                          >
-                            <Trash2 className="h-4 w-4 mr-2" />
-                            Delete
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                </div>
+          <div className="space-y-6">
+            {events.map(ev => {
+              const dateText = fmtDate(ev.startDate);
+              const venue = ev.location ?? "-";
 
-                {/* Progress Bar for Registration */}
-                <div className="mt-4">
-                  <div className="flex justify-between text-sm mb-1">
-                    <span>Registration Progress</span>
-                    <span>{Math.round((event.currentRegistrations / event.maximumRegistrations) * 100)}%</span>
+              return (
+                <Card key={ev.id} className="overflow-hidden rounded-lg">
+                  {/* royal-blue gradient top */}
+                  <div
+                    style={{
+                      background: "linear-gradient(90deg, #0A2A88 0%, #1E3FAE 35%, #3F60E8 100%)",
+                    }}
+                    className="p-4"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h3 className="text-white text-lg font-semibold truncate">{ev.title}</h3>
+                        <div className="flex items-center gap-4 mt-2 text-sm text-white/90">
+                          <span className="flex items-center gap-2">
+                            <Calendar className="h-4 w-4" />
+                            <span>{dateText}</span>
+                          </span>
+                          <span className="flex items-center gap-2">
+                            <MapPin className="h-4 w-4" />
+                            <span>{venue}</span>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="text-white/90 text-sm">{ev.type ? ev.type : ""}</div>
+                        <Button variant="ghost" onClick={() => toggle(ev.id)} className="text-white/95">
+                          {openId === ev.id ? "Hide →" : "View →"}
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div
-                      className="bg-primary rounded-full h-2 transition-all duration-300"
-                      style={{ 
-                        width: `${(event.currentRegistrations / event.maximumRegistrations) * 100}%` 
-                      }}
-                    ></div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          ))
+
+                  <CardContent className="p-6">
+                    {openId === ev.id ? (
+                      <div className="space-y-4">
+                        <div className="text-sm text-muted-foreground">
+                          <div className="font-medium mb-1">About</div>
+                          <div className="whitespace-pre-line">{ev.description || "No description provided."}</div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="p-4 bg-gray-50 rounded">
+                            <div className="text-xs text-gray-500 mb-1">Date</div>
+                            <div className="text-sm">{dateText}</div>
+                          </div>
+
+                          <div className="p-4 bg-gray-50 rounded">
+                            <div className="text-xs text-gray-500 mb-1">Location</div>
+                            <div className="flex items-center gap-2 text-sm">
+                              <MapPin className="h-4 w-4 text-muted-foreground" />
+                              <span>{venue}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-muted-foreground">Click <span className="font-medium">View →</span> to see details</div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
